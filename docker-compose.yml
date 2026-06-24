@@ -1,0 +1,12 @@
+services:
+  pdf2md:
+    build: .
+    container_name: pdf2md-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - /data/pdf2md/tasks:/app/tasks
+      - /data/pdf2md/tmp:/app/tmp
+    env_file:
+      - .env
+    restart: always
