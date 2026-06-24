@@ -1,0 +1,7 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<script>
+  const id = new URLSearchParams(window.location.search).get('id');
+  window.location.replace(id ? `/?id=${id}` : '/');
+</script>
+</head></html>
