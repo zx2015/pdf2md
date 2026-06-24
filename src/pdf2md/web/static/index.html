@@ -92,6 +92,40 @@
               background:var(--s2); transition:border-color .15s; }
   .img-item:hover { border-color:var(--acc); }
   .img-item img { width:100%; display:block; }
+  .img-eye { position:absolute; top:.4rem; right:.4rem;
+             width:26px; height:26px; border-radius:50%;
+             background:rgba(0,0,0,.52); border:none; color:#fff;
+             display:flex; align-items:center; justify-content:center;
+             cursor:pointer; font-size:.82rem;
+             opacity:0; transition:opacity .15s; }
+  .img-item:hover .img-eye { opacity:1; }
+  .img-eye:hover { background:rgba(80,72,229,.85); }
+
+  /* ── LIGHTBOX ── */
+  #lightbox { display:none; position:fixed; inset:0; z-index:2000;
+              background:rgba(0,0,0,.88); flex-direction:column;
+              align-items:center; justify-content:center; }
+  #lightbox.show { display:flex; }
+  #lb-close { position:absolute; top:1rem; right:1.2rem;
+              background:rgba(255,255,255,.12); border:none; color:#fff;
+              width:36px; height:36px; border-radius:50%; font-size:1.1rem;
+              cursor:pointer; display:grid; place-items:center;
+              transition:background .15s; }
+  #lb-close:hover { background:rgba(255,255,255,.25); }
+  #lb-img-wrap { flex:1; min-height:0; display:flex; align-items:center;
+                 justify-content:center; padding:3rem 4rem; width:100%; }
+  #lb-img { max-width:100%; max-height:100%; object-fit:contain;
+            border-radius:6px; box-shadow:0 8px 40px rgba(0,0,0,.6);
+            user-select:none; }
+  #lb-footer { height:52px; flex-shrink:0; display:flex; align-items:center;
+               gap:1.2rem; color:#fff; font-size:.88rem; }
+  .lb-arrow { background:rgba(255,255,255,.12); border:none; color:#fff;
+              width:36px; height:36px; border-radius:50%; font-size:1rem;
+              cursor:pointer; display:grid; place-items:center;
+              transition:background .15s; }
+  .lb-arrow:hover { background:rgba(80,72,229,.8); }
+  .lb-arrow:disabled { opacity:.25; cursor:default; background:none; }
+  #lb-counter { min-width:80px; text-align:center; color:rgba(255,255,255,.75); font-size:.82rem; }
   .img-pg { position:absolute; bottom:0; left:0; right:0;
             background:linear-gradient(transparent,rgba(0,0,0,.72));
             padding:.3rem .5rem; font-size:.67rem; color:#fff; text-align:right; }
@@ -257,7 +291,7 @@
 <header>
   <div class="logo">
     <span class="logo-box"><i class="bi bi-file-earmark-pdf-fill"></i></span>
-    pdf2md
+    PDF2MD
   </div>
   <div class="h-sep"></div>
   <div id="task-title" class="empty">选择或上传 PDF 开始转换</div>
@@ -362,6 +396,25 @@
   </div>
 </div>
 
+<!-- Lightbox -->
+<div id="lightbox">
+  <button id="lb-close" onclick="closeLightbox()" title="关闭 (ESC)">
+    <i class="bi bi-x-lg"></i>
+  </button>
+  <div id="lb-img-wrap">
+    <img id="lb-img" src="" alt="">
+  </div>
+  <div id="lb-footer">
+    <button class="lb-arrow" id="lb-prev" onclick="lbNav(-1)" title="上一页 (←)">
+      <i class="bi bi-chevron-left"></i>
+    </button>
+    <span id="lb-counter"></span>
+    <button class="lb-arrow" id="lb-next" onclick="lbNav(1)" title="下一页 (→)">
+      <i class="bi bi-chevron-right"></i>
+    </button>
+  </div>
+</div>
+
 <!-- Delete modal -->
 <div class="overlay" id="del-overlay">
   <div class="modal-box">
@@ -389,6 +442,8 @@ let totalPages  = 0;
 let donePages   = 0;
 let sbOpen      = true;
 let deleteTarget= null;
+let lbImages    = [];   // current image filenames for lightbox
+let lbIndex     = 0;    // current lightbox page index
 
 // ── Helpers ────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -503,7 +558,7 @@ function updateHeader() {
   const t = currentTask;
   if (!t) return;
   const el = $('task-title');
-  el.textContent = t.filename;
+  el.textContent = 'PDF2MD · ' + t.filename;
   el.classList.remove('empty');
   $('hdr-badge').innerHTML = mkBadge(t.status);
   const dl = $('dl-btn');
@@ -527,10 +582,14 @@ function renderImages(state, imgs=[]) {
     cnt.textContent = '';
   } else {
     cnt.textContent = imgs.length + ' 页';
+    lbImages = imgs;
     list.innerHTML = imgs.map((name, i) => `
       <div class="img-item">
         <img src="/api/tasks/${currentId}/images/${esc(name)}" loading="lazy" alt="第${i+1}页">
         <div class="img-pg">第 ${i+1} 页</div>
+        <button class="img-eye" onclick="event.stopPropagation();openLightbox(${i})" title="放大查看">
+          <i class="bi bi-eye"></i>
+        </button>
       </div>`).join('');
   }
 }
@@ -544,6 +603,38 @@ async function fetchImages() {
     if (imgs.length > 0) renderImages('done', imgs);
   } catch {}
 }
+
+// ── Lightbox ───────────────────────────────────────────────────────────
+function openLightbox(idx) {
+  if (!lbImages.length) return;
+  lbIndex = idx;
+  $('lightbox').classList.add('show');
+  document.body.style.overflow = 'hidden';
+  lbRender();
+}
+function closeLightbox() {
+  $('lightbox').classList.remove('show');
+  document.body.style.overflow = '';
+}
+function lbNav(dir) {
+  lbIndex = Math.max(0, Math.min(lbImages.length - 1, lbIndex + dir));
+  lbRender();
+}
+function lbRender() {
+  const name = lbImages[lbIndex];
+  $('lb-img').src = `/api/tasks/${currentId}/images/${esc(name)}`;
+  $('lb-img').alt = `第 ${lbIndex + 1} 页`;
+  $('lb-counter').textContent = `第 ${lbIndex + 1} 页 / 共 ${lbImages.length} 页`;
+  $('lb-prev').disabled = lbIndex === 0;
+  $('lb-next').disabled = lbIndex === lbImages.length - 1;
+}
+$('lightbox').addEventListener('click', e => { if (e.target === e.currentTarget || e.target === $('lb-img-wrap')) closeLightbox(); });
+document.addEventListener('keydown', e => {
+  if (!$('lightbox').classList.contains('show')) return;
+  if (e.key === 'Escape')     closeLightbox();
+  if (e.key === 'ArrowLeft')  lbNav(-1);
+  if (e.key === 'ArrowRight') lbNav(1);
+});
 
 // ── Preview ────────────────────────────────────────────────────────────
 async function renderPreview() {
