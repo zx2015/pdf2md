@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 
@@ -101,3 +102,38 @@ class TestDescribeImage:
         )
 
         assert result == mermaid_response
+
+    def test_retries_timeout_and_returns_timeout_message(self, tmp_path, mocker):
+        """网络超时应重试多次，最终返回包含重试信息的错误文本。"""
+        image_path = tmp_path / "page_001.jpg"
+        _create_dummy_jpeg(image_path)
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = httpx.TimeoutException("request timed out")
+        mocker.patch("pdf2md.tools.image_analyzer._build_llm", return_value=mock_llm)
+
+        from pdf2md.tools.image_analyzer import describe_image
+
+        result = describe_image.invoke({"image_path": str(image_path), "prompt": "描述图像"})
+
+        assert result.startswith("⚠️ 错误：LLM 调用超时")
+        assert "已重试" in result
+        assert mock_llm.invoke.call_count == 4
+
+    def test_retries_rate_limit_and_returns_rate_limit_message(self, tmp_path, mocker):
+        """Rate limit 应重试后返回明确错误。"""
+        image_path = tmp_path / "page_001.jpg"
+        _create_dummy_jpeg(image_path)
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = Exception("429 Too Many Requests: rate limit exceeded")
+        mocker.patch("pdf2md.tools.image_analyzer._build_llm", return_value=mock_llm)
+        mocker.patch("pdf2md.tools.image_analyzer.time.sleep")
+
+        from pdf2md.tools.image_analyzer import describe_image
+
+        result = describe_image.invoke({"image_path": str(image_path), "prompt": "描述图像"})
+
+        assert result.startswith("⚠️ 错误：触发 Rate Limit")
+        assert "已重试" in result
+        assert mock_llm.invoke.call_count == 4

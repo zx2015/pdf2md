@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from pdf2md import task_manager, streaming
-from pdf2md.agent import astream_conversion
+from pdf2md.agent import PageProcessingError, astream_conversion
 from pdf2md.config import settings
 from pdf2md.task_manager import init_db
 
@@ -34,6 +34,9 @@ async def _run_task(task_id: str) -> None:
     if task is None:
         return
 
+    # 断点续传：若任务有记录的断点页码，从该页继续
+    start_page = task.resume_from_page if task.resume_from_page else 1
+
     async def emit(entry: dict) -> None:
         task_manager.append_log(task_id, entry)
         await streaming.publish(task_id, entry)
@@ -41,9 +44,10 @@ async def _run_task(task_id: str) -> None:
     async with _get_semaphore():
         try:
             task_manager.update_status(task_id, "processing")
+            resume_note = f"（从第 {start_page} 页继续）" if start_page > 1 else ""
             await emit({
                 "type": "task_start",
-                "message": f"开始处理：{task.filename}",
+                "message": f"开始处理：{task.filename}{resume_note}",
                 "timestamp": datetime.now().isoformat(),
             })
 
@@ -52,15 +56,28 @@ async def _run_task(task_id: str) -> None:
                 str(task.output_md),
                 str(task.images_dir),
                 task_id=task_id,
+                start_page=start_page,
             ):
                 await emit(log_entry)
 
             page_count = len(list(task.images_dir.glob("page_*.jpg")))
             task_manager.update_status(task_id, "completed", page_count=page_count)
+            task_manager.set_resume_page(task_id, None)  # 完成后清除断点
             await emit({
                 "type": "task_complete",
                 "output_path": str(task.output_md),
                 "page_count": page_count,
+                "timestamp": datetime.now().isoformat(),
+            })
+
+        except PageProcessingError as exc:
+            # 记录断点，前端可据此显示"继续任务"按钮
+            task_manager.set_resume_page(task_id, exc.page_num)
+            task_manager.update_status(task_id, "failed", error=str(exc))
+            await emit({
+                "type": "task_error",
+                "error": str(exc),
+                "resume_from_page": exc.page_num,
                 "timestamp": datetime.now().isoformat(),
             })
 
@@ -117,6 +134,21 @@ def create_app() -> FastAPI:
         """删除任务及其所有文件（包括 PDF、图像、Markdown）。"""
         if not task_manager.delete_task(task_id):
             raise HTTPException(status_code=404, detail="任务不存在")
+
+    @app.post("/api/tasks/{task_id}/resume", status_code=202)
+    async def resume_task(task_id: str, background_tasks: BackgroundTasks):
+        """从断点继续处理失败的任务（需要 resume_from_page 有值）。"""
+        task = task_manager.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.status != "failed":
+            raise HTTPException(status_code=400, detail="只有状态为 failed 的任务才能继续")
+        if task.resume_from_page is None:
+            raise HTTPException(status_code=400, detail="该任务无断点记录，无法继续（可能是非页面处理错误）")
+
+        task_manager.update_status(task_id, "pending")
+        background_tasks.add_task(_run_task, task_id)
+        return task_manager.get_task(task_id).to_dict()
 
     @app.get("/api/tasks/{task_id}/stream")
     async def stream_task_logs(task_id: str):

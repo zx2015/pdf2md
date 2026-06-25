@@ -13,11 +13,13 @@
 - 📝 **文字提取** — 保留标题层级、段落结构
 - 📊 **表格转换** — 自动识别表格，输出标准 Markdown 表格
 - 📐 **图表处理** — 流程图、甘特图、思维导图、时序图等转为 Mermaid 代码块
-- 🔢 **公式支持** — 数学公式转为 LaTeX（`$$...$$`）
+- 🔢 **公式支持** — 数学公式转为 LaTeX（`$$...$$`），Web 界面使用 KaTeX 实时渲染
 - 🗂️ **双栏布局** — 自动识别左右双栏排版，按正确顺序组装
 - 🌐 **实时日志** — Web 界面通过 SSE 实时推送 Agent 思考、工具调用全过程
 - 📋 **任务历史** — 支持查看、重访、删除历史转换任务
 - 🔗 **断线续看** — 刷新页面后自动回放历史日志，不丢失处理记录
+- ⚡ **断点续传** — 单页连续失败 3 次后记录断点，可从中断页一键继续处理
+- 🔄 **自动重试** — 网络超时、连接中断、Rate Limit 自动退避重试
 
 ---
 
@@ -97,6 +99,11 @@ python -m pdf2md convert your_document.pdf -o output.md
 | `PORT` | Web 服务监听端口 | `8000` |
 | `TASKS_DIR` | 任务文件存储目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发转换任务数 | `3` |
+| `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒） | `120` |
+| `RETRY_ATTEMPTS` | LLM 调用重试总次数（含首次） | `4` |
+| `RETRY_WAIT_MIN` | 首次重试最小等待秒数 | `2` |
+| `RETRY_WAIT_MAX` | 最大退避等待秒数 | `60` |
+| `RATE_LIMIT_WAIT` | 触发 Rate Limit（429）时额外等待秒数 | `15` |
 
 ### 使用第三方 LLM 服务示例
 
@@ -126,21 +133,27 @@ LLM_MODEL=llava
     │ POST /api/tasks
     ▼
 FastAPI — 创建任务目录，写入 SQLite
-    │ 后台协程
+    │ 后台协程 _run_task()
     ▼
-LangGraph React Agent
+astream_conversion(pdf, output, images_dir, start_page)
     │
-    ├─ pdf_to_images      将 PDF 每页渲染为 JPEG
-    ├─ describe_image     调用 LLM 视觉理解单页图像（Agent 自行构造 prompt）
-    ├─ read_file_lines    读取已写入的 Markdown 末尾若干行（滑动窗口）
-    └─ write_file_lines   追加/覆盖写入 Markdown 文件
+    ├─ Step 1: pdf_to_images — 将 PDF 所有页渲染为 JPEG
+    │
+    └─ Step 2: for each page（串行）
+          │
+          └─ 全新 LangGraph Agent（独立上下文，无溢出风险）
+                ├─ read_file_lines    读取已写 Markdown 末尾 15 行（了解上下文）
+                ├─ describe_image     调用 LLM 识别当前页（含 tenacity 重试）
+                └─ write_file_lines   追加到输出文件
+          │
+          失败重试 3 次 → PageProcessingError → 记录断点 → 可继续
     │
     ▼
 SSE 实时推送事件 → 浏览器 EventSource
 每条事件同步写入 logs.jsonl（断线重连时回放）
 ```
 
-Agent 采用**滑动窗口**组装策略：每写入一页前先读取文件末尾 15 行，保持上下文连贯，同时避免超出模型 context window。
+每页创建**独立 Agent 实例**，无跨页共享状态，彻底解决长文档上下文溢出问题。
 
 ---
 

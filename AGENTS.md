@@ -2,36 +2,37 @@
 
 ## 项目概述
 
-pdf2md 是一个基于 **LangGraph React Agent** 的 PDF 转 Markdown 工具，提供 Web UI 和命令行两种使用方式。Agent 编排三个工具完成转换，处理过程通过 SSE 实时推送到浏览器。
+pdf2md 是一个基于 **LangGraph React Agent** 的 PDF 转 Markdown 工具，提供 Web UI 和命令行两种使用方式。
+采用 **per-page Agent 架构**：Python 外层循环串行驱动，每页独立创建一个 LangGraph Agent 实例，彻底避免长文档的上下文溢出问题，并支持断点续传。
 
 ## 项目结构
 
 ```
 src/pdf2md/
-├── agent.py              # LangGraph React Agent（同步 + 异步流式两个入口）
+├── agent.py              # 核心：per-page Agent 循环、PageProcessingError、astream_conversion()
 ├── config.py             # 环境变量配置（Settings dataclass）
-├── assembler.py          # Markdown 组装（Tool 3）
-├── task_manager.py       # 任务 CRUD + SQLite + 目录管理
+├── task_manager.py       # 任务 CRUD + SQLite + 目录管理 + resume_from_page
 ├── streaming.py          # asyncio pub/sub，为 SSE 提供实时事件总线
 ├── cli.py                # 命令行：convert（单文件）| serve（启动 Web）
 ├── tools/
-│   ├── pdf_to_image.py    # Tool 1: PDF 每页 → JPEG
-│   └── image_analyzer.py  # Tool 2: JPEG → JSON 结构化内容块
+│   ├── pdf_to_image.py   # Tool: pdf_to_images — PDF 每页 → JPEG
+│   ├── image_analyzer.py # Tool: describe_image — 图像 → Markdown 文本（含 tenacity 重试）
+│   └── file_tools.py     # Tool: read_file_lines / write_file_lines
 └── web/
-    ├── app.py             # FastAPI 应用工厂 + 所有 API 路由
+    ├── app.py            # FastAPI 应用工厂 + 所有 API 路由（含 /resume 端点）
     └── static/
-        ├── index.html     # 首页：上传 + 任务历史
-        └── task.html      # 任务详情：实时日志流 + Markdown 预览
+        ├── index.html    # 单页面 Web 应用（SPA）
+        └── vendor/       # 本地静态资源：bootstrap-icons, marked.js, KaTeX
 tests/
-├── fixtures/              # 测试用 PDF 和参考 Markdown
-├── conftest.py            # 公共 fixtures
+├── conftest.py
+├── fixtures/
 ├── test_pdf_to_image.py
 ├── test_image_analyzer.py
 ├── test_assembler.py
 └── test_agent.py
 docs/
-├── requirements.md        # 完整需求文档
-└── design.md              # 架构与设计文档
+├── requirements.md
+└── design.md
 ```
 
 ## 开发环境
@@ -46,7 +47,7 @@ cp .env.example .env   # 填写 OPENAI_API_KEY
 ```bash
 # 启动 Web 服务（推荐）
 python -m pdf2md serve
-# 或 开发模式（热重载）
+# 开发模式（热重载）
 python -m pdf2md serve --reload --port 8000
 
 # 命令行单文件转换
@@ -56,10 +57,10 @@ python -m pdf2md convert input.pdf -o output.md
 ## 测试命令
 
 ```bash
-pytest                                                      # 全部测试
-pytest -m "not e2e"                                        # 跳过需要 API Key 的测试
-pytest tests/test_assembler.py                             # 单个文件
-pytest tests/test_assembler.py::TestAssembleMarkdown::test_writes_markdown_file  # 单个用例
+pytest                          # 全部测试
+pytest -m "not e2e"            # 跳过需要 API Key 的测试
+pytest tests/test_agent.py     # 单个文件
+PYTHONPATH=src pytest -m "not e2e"   # 未安装包时使用
 ```
 
 ## 架构关键点
@@ -71,25 +72,51 @@ pytest tests/test_assembler.py::TestAssembleMarkdown::test_writes_markdown_file 
       │ POST /api/tasks
       ▼
 FastAPI 创建任务目录 + 写入 SQLite
-      │ BackgroundTask
+      │ BackgroundTask → _run_task(task_id)
       ▼
-_run_task(task_id) [asyncio协程]
-      │ astream_conversion()
-      ▼
-LangGraph astream_events()  ──► _format_langgraph_event()
-      │                               │
-      │                               ▼ dict
-      │                    task_manager.append_log()  → logs.jsonl
-      │                    streaming.publish()        → asyncio.Queue
-      │                                                     │
-      ▼                                              SSE /api/tasks/{id}/stream
-浏览器 EventSource                              ◄──────────────────────────┘
+astream_conversion(pdf, output, images_dir, start_page)
+      │
+      ├─ Step 1: pdf_to_images() → [page_001.jpg … page_N.jpg]
+      │
+      └─ Step 2: for page in pages[start_page:]:
+            │
+            └─ _process_one_page()  ← 全新 LangGraph Agent 实例
+                  │  工具：describe_image, read_file_lines, write_file_lines
+                  │  失败重试 3 次 → PageProcessingError → 记录断点
+                  ▼
+              SSE 事件流 → task_manager.append_log() → logs.jsonl
+                                   │
+                              streaming.publish() → asyncio.Queue
+                                                         │
+                                              GET /api/tasks/{id}/stream
+                                           ◄───────────────────────────┘
+浏览器 EventSource
 ```
+
+### Per-page Agent 工作流
+
+每页 Agent 接收用户消息（当前页码、图片路径、上一页路径、输出文件路径），执行：
+
+1. `read_file_lines(output.md, start_line=-15)` — 读取上文末尾 15 行（第 1 页跳过）
+2. `describe_image(page_N.jpg, prompt)` — 带上下文 prompt 识别当前页
+3. 按需 `describe_image(page_N-1.jpg, ...)` — 拼接检查时查看上一页（可选）
+4. `write_file_lines(output.md, content, "append")` — 追加到输出文件
+
+每页 Agent recursion_limit=20，不共享任何状态。
+
+### 断点续传机制
+
+- `task_manager.tasks` 表含 `resume_from_page INTEGER` 列
+- 某页重试 3 次后仍失败 → 抛出 `PageProcessingError(page_num, total_pages, cause)`
+- `_run_task` 捕获后调用 `set_resume_page(task_id, page_num)` + 写入 `task_error` 事件（含 `resume_from_page`）
+- `POST /api/tasks/{id}/resume` 端点：检查 `resume_from_page`，重置状态，重新启动 `_run_task`
+- `_run_task` 读取 `task.resume_from_page`，传给 `astream_conversion(start_page=N)`
+- 图像已存在时跳过 PDF 转换步骤
 
 ### SSE 断线重连机制
 
-1. 每个事件实时写入 `tasks/{id}/logs.jsonl`（持久化）  
-2. SSE 端点先回放 `logs.jsonl` 全部历史，再订阅 live queue  
+1. 每个事件实时写入 `tasks/{id}/logs.jsonl`（持久化）
+2. SSE 端点先回放 `logs.jsonl` 全部历史，再订阅 live queue
 3. 浏览器刷新或重连后自动获取完整日志，无数据丢失
 
 ### 任务目录结构
@@ -97,37 +124,54 @@ LangGraph astream_events()  ──► _format_langgraph_event()
 ```
 tasks/
 └── {uuid}/
-    ├── input.pdf       # 原始上传文件
-    ├── images/         # page_001.jpg, page_002.jpg, ...
-    ├── output.md       # 转换结果
-    └── logs.jsonl      # 每行一条日志 JSON（用于 SSE 回放）
+    ├── input.pdf    # 原始上传文件
+    ├── images/      # page_001.jpg, page_002.jpg, ...
+    ├── output.md    # 转换结果（逐页追加）
+    └── logs.jsonl   # 每行一条日志 JSON（SSE 回放用）
 ```
 
-### LangGraph 工具约定
+### SSE 日志事件格式
 
-工具函数用 `@tool` 装饰，返回值必须是字符串（JSON 或路径）：
+| type | 说明 | 关键字段 |
+|------|------|------|
+| `task_start` | 任务开始 | `message` |
+| `agent_thinking` | Agent 推理文本流 | `content` |
+| `tool_start` | 工具调用开始 | `tool`, `input` |
+| `tool_end` | 工具调用结束 | `tool`, `output` |
+| `page_start` | 开始处理某页 | `page`, `total` |
+| `page_complete` | 某页处理完成 | `page`, `total` |
+| `page_retry` | 某页重试 | `page`, `attempt`, `error` |
+| `task_complete` | 全部完成 | `output_path`, `page_count` |
+| `task_error` | 任务失败 | `error`, `resume_from_page`（可选）|
+
+### 工具约定
+
+工具函数用 `@tool` 装饰，docstring 作为 LLM 工具描述（不要省略）。
 
 | 工具 | 输入 | 输出 |
 |------|------|------|
-| `pdf_to_images` | pdf_path, output_dir, dpi | JSON 路径列表 |
-| `analyze_image_page` | image_path, page_number | JSON PageAnalysis |
-| `assemble_markdown` | pages_json, output_path | 输出文件路径字符串 |
+| `pdf_to_images` | pdf_path, output_dir, dpi | JSON 字符串（路径列表）|
+| `describe_image` | image_path, prompt | 原始 Markdown 文本（LLM 直接响应）|
+| `read_file_lines` | path, start_line, end_line | 文本内容（支持负数索引）|
+| `write_file_lines` | path, content, mode | 写入结果描述 |
 
 ### 错误处理约定
 
-- 单页分析失败：`PageAnalysis.error` 非空，内容以 `> ⚠️` 占位，继续处理其余页
+- `describe_image` 内部有 tenacity 重试（网络错误/超时/rate limit），失败后返回 `"⚠️ 错误：..."` 字符串
 - 工具内部用 `logging`，禁止 `print`
-- `_run_task` 捕获所有异常，写入 `task_error` 事件后关闭 SSE 流
+- 单页 Agent 失败时由外层循环重试最多 3 次；3 次后抛 `PageProcessingError`
+- mock LLM 时 patch `pdf2md.tools.image_analyzer._build_llm`
 
 ## 关键依赖
 
 | 包 | 用途 |
 |----|------|
 | `langgraph` | React Agent 框架 |
-| `langchain-openai` | LLM 调用（GPT-4o vision） |
+| `langchain-openai` | LLM 调用（GPT-4o vision）|
 | `pymupdf` | PDF 渲染为图像 |
 | `fastapi` + `uvicorn` | Web 服务 |
 | `pydantic-settings` | 环境变量配置 |
+| `tenacity` | describe_image LLM 调用重试 |
 
 ## 环境变量
 
@@ -137,109 +181,11 @@ tasks/
 | `OPENAI_BASE_URL` | 自定义 API 端点 | OpenAI 官方 |
 | `LLM_MODEL` | 视觉模型名称 | `gpt-4o` |
 | `PDF_DPI` | PDF 渲染分辨率 | `150` |
-| `TASKS_DIR` | 任务存储目录 | `./tasks` |
-| `MAX_CONCURRENT_TASKS` | 最大并发 Agent 数 | `3` |
-| `HOST` / `PORT` | Web 服务监听地址 | `0.0.0.0:8000` |
-
-
-## 项目概述
-
-pdf2md 是一个基于 **LangGraph React Agent** 的 PDF 转 Markdown 工具。Agent 编排三个工具完成转换：PDF→JPEG、LLM图像分析、Markdown组装。
-
-## 项目结构
-
-```
-src/pdf2md/
-├── agent.py          # LangGraph React Agent 入口（核心）
-├── config.py         # 环境变量配置（Settings dataclass）
-├── assembler.py      # Markdown 组装逻辑（独立于 Agent）
-├── cli.py            # 命令行入口
-└── tools/
-    ├── pdf_to_image.py    # Tool 1: PDF 每页 → JPEG
-    └── image_analyzer.py  # Tool 2: JPEG → JSON 结构化内容块
-tests/
-├── fixtures/         # 测试用 PDF 和参考 Markdown
-├── test_pdf_to_image.py
-├── test_image_analyzer.py
-└── test_agent.py
-docs/
-├── requirements.md   # 完整需求文档
-└── design.md         # 架构与设计文档
-```
-
-## 开发环境
-
-```bash
-# 安装依赖
-pip install -e ".[dev]"
-
-# 配置环境变量（复制并填写 API Key）
-cp .env.example .env
-```
-
-## 运行与测试命令
-
-```bash
-# 运行全部测试
-pytest
-
-# 运行单个测试文件
-pytest tests/test_pdf_to_image.py
-
-# 运行单个测试函数
-pytest tests/test_pdf_to_image.py::test_converts_pdf_to_images
-
-# 跳过需要真实 API Key 的端到端测试
-pytest -m "not e2e"
-
-# 命令行转换
-python -m pdf2md convert input.pdf -o output.md
-```
-
-## 架构关键点
-
-### LangGraph React Agent 模式
-
-- `agent.py` 使用 `langgraph.prebuilt.create_react_agent` 构建 Agent
-- Agent 以 `pdf_path` 和 `output_path` 为输入，自主决定工具调用顺序
-- 工具函数用 `@tool` 装饰器定义，返回值均为字符串（JSON 或路径）
-
-### 数据模型
-
-内容块类型（`ContentBlock.type`）：
-- `"text"` — 文字段落，保留标题层级
-- `"table"` — Markdown 表格字符串
-- `"image_description"` — 以 `> 📷` 开头的图片描述
-
-### 工具调用约定
-
-| 工具 | 输入 | 输出 |
-|------|------|------|
-| `pdf_to_images` | pdf_path, output_dir, dpi | JSON 字符串（路径列表） |
-| `analyze_image_page` | image_path, page_number | JSON 字符串（PageAnalysis） |
-| `assemble_markdown` | pages_json, output_path | 输出文件路径字符串 |
-
-### 错误处理约定
-
-- 单页分析失败时，`PageAnalysis.error` 字段非空，`content_blocks` 为空
-- `assemble_markdown` 对 `error` 非空的页面输出 `> ⚠️ 第 N 页解析失败：{error}` 占位符
-- 工具函数内部使用 `logging` 模块，不直接 `print`
-
-## 关键依赖
-
-| 包 | 用途 |
-|----|------|
-| `langgraph` | React Agent 框架 |
-| `langchain-openai` | LLM 调用（GPT-4o vision） |
-| `pymupdf` | PDF 渲染为图像 |
-| `pydantic-settings` | 环境变量配置 |
-
-## 环境变量
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `OPENAI_API_KEY` | OpenAI API Key（必填） | — |
-| `OPENAI_BASE_URL` | 自定义 API 端点 | OpenAI 官方 |
-| `LLM_MODEL` | 视觉模型名称 | `gpt-4o` |
-| `PDF_DPI` | PDF 渲染分辨率 | `150` |
-| `TEMP_DIR` | 临时图像目录 | `./tmp` |
+| `TASKS_DIR` | 任务存储根目录 | `./tasks` |
+| `MAX_CONCURRENT_TASKS` | 最大并发 Web 任务数 | `3` |
+| `HOST` / `PORT` | Web 服务监听 | `0.0.0.0:8000` |
+| `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒）| `120` |
+| `RETRY_ATTEMPTS` | tenacity 重试总次数（含首次）| `4` |
+| `RETRY_WAIT_MIN` | 首次重试等待秒数 | `2` |
+| `RETRY_WAIT_MAX` | 最大重试等待秒数 | `60` |
+| `RATE_LIMIT_WAIT` | 429 时额外等待秒数 | `15` |

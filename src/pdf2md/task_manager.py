@@ -42,15 +42,21 @@ def init_db() -> None:
     with _db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
-                id          TEXT PRIMARY KEY,
-                filename    TEXT NOT NULL,
-                status      TEXT NOT NULL,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL,
-                page_count  INTEGER,
-                error       TEXT
+                id                TEXT PRIMARY KEY,
+                filename          TEXT NOT NULL,
+                status            TEXT NOT NULL,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                page_count        INTEGER,
+                error             TEXT,
+                resume_from_page  INTEGER
             )
         """)
+        # 迁移：为已有数据库添加 resume_from_page 列
+        try:
+            conn.execute("ALTER TABLE tasks ADD COLUMN resume_from_page INTEGER")
+        except Exception:
+            pass  # 列已存在，忽略
 
 
 @dataclass
@@ -62,6 +68,7 @@ class Task:
     updated_at: str
     page_count: int | None = None
     error: str | None = None
+    resume_from_page: int | None = None  # 断点续传：失败时记录的页码（1-indexed）
 
     @property
     def task_dir(self) -> Path:
@@ -97,6 +104,7 @@ class Task:
             "updated_at": self.updated_at,
             "page_count": self.page_count,
             "error": self.error,
+            "resume_from_page": self.resume_from_page,
         }
 
 
@@ -109,6 +117,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         updated_at=row["updated_at"],
         page_count=row["page_count"],
         error=row["error"],
+        resume_from_page=row["resume_from_page"],
     )
 
 
@@ -165,6 +174,16 @@ def delete_task(task_id: str) -> bool:
     with _db() as conn:
         conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     return True
+
+
+def set_resume_page(task_id: str, page_num: int | None) -> None:
+    """设置（或清除）任务的断点续传页码。page_num 为 None 时清除断点。"""
+    now = datetime.now().isoformat()
+    with _db() as conn:
+        conn.execute(
+            "UPDATE tasks SET resume_from_page=?, updated_at=? WHERE id=?",
+            (page_num, now, task_id),
+        )
 
 
 def append_log(task_id: str, entry: dict) -> None:
