@@ -36,7 +36,11 @@ def read_file_lines(path: str, start_line: int = 1, end_line: int = -1) -> str:
     if not file_path.exists():
         return ""
 
-    lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError:
+        logger.warning("read_file_lines 收到二进制文件路径（疑似图片），跳过: %s", path)
+        return f"⚠️ 该路径是二进制文件，不是文本文件，请检查路径是否正确: {path}"
     total = len(lines)
     if total == 0:
         return ""

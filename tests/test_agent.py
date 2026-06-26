@@ -135,10 +135,10 @@ class TestAstreamConversion:
                 content = page_responses[idx[0] % len(page_responses)]
                 idx[0] += 1
                 msg = inputs["messages"][0][1]
-                # 从 user_message 提取 output_path
+                # 从 user_message 提取 output_path（反引号包裹的路径）
                 for line in msg.split("\n"):
-                    if "Markdown 输出文件" in line:
-                        op = line.split("：")[-1].strip()
+                    if "Markdown 输出文件路径" in line or "Markdown 输出文件" in line:
+                        op = line.split("：")[-1].strip().strip("`")
                         Path(op).open("a", encoding="utf-8").write(content + "\n")
                         break
                 yield {}  # 至少 yield 一次让 async for 能迭代

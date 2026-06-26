@@ -137,3 +137,87 @@ class TestDescribeImage:
         assert result.startswith("⚠️ 错误：触发 Rate Limit")
         assert "已重试" in result
         assert mock_llm.invoke.call_count == 4
+
+
+class TestRepetitionDetection:
+    def test_detect_single_char_repetition(self):
+        """单字符连续重复 20+ 次应被检测为异常。"""
+        from pdf2md.tools.image_analyzer import _detect_repetition
+
+        normal = "# 标题\n\n这是正常的内容，没有重复。"
+        assert _detect_repetition(normal) is None
+
+        emoji_repeat = "📷" * 30
+        assert _detect_repetition(emoji_repeat) is not None
+
+        bullet_repeat = "▪" * 25 + " 一些文字"
+        assert _detect_repetition(bullet_repeat) is not None
+
+    def test_detect_line_repetition(self):
+        """相同行重复 5+ 次应被检测为异常。"""
+        from pdf2md.tools.image_analyzer import _detect_repetition
+
+        repeated = ("这是一行内容\n" * 6) + "其他内容"
+        result = _detect_repetition(repeated)
+        assert result is not None
+        assert "重复" in result
+
+    def test_truncate_at_repetition(self):
+        """截断函数应保留重复前的内容并附加警告。"""
+        from pdf2md.tools.image_analyzer import _truncate_at_repetition
+
+        text = "# 正常标题\n\n正常段落内容。\n\n" + "📷" * 50
+        result = _truncate_at_repetition(text)
+
+        assert "正常段落内容" in result
+        assert "⚠️" in result
+        assert "📷" * 50 not in result
+
+    def test_describe_image_retries_on_repetition(self, tmp_path, mocker):
+        """检测到重复输出时应使用修正 prompt 重试一次。"""
+        image_path = tmp_path / "page_001.jpg"
+        _create_dummy_jpeg(image_path)
+
+        repeat_response = "📷" * 50
+        normal_response = "# 正常内容\n\n这是重试后的正常输出。"
+
+        call_count = [0]
+
+        def side_effect(messages):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return MagicMock(content=repeat_response)
+            return MagicMock(content=normal_response)
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = side_effect
+        mocker.patch("pdf2md.tools.image_analyzer._build_llm", return_value=mock_llm)
+
+        from pdf2md.tools.image_analyzer import describe_image
+
+        result = describe_image.invoke({"image_path": str(image_path), "prompt": "描述图像"})
+
+        assert result == normal_response
+        assert mock_llm.invoke.call_count == 2
+        # 第二次 prompt 中应包含修正说明
+        second_call_msg = mock_llm.invoke.call_args_list[1][0][0]
+        assert "重要" in str(second_call_msg) or "重复" in str(second_call_msg)
+
+    def test_describe_image_truncates_when_retry_still_repeats(self, tmp_path, mocker):
+        """重试后仍有重复输出时应截断并附加警告，而非崩溃。"""
+        image_path = tmp_path / "page_001.jpg"
+        _create_dummy_jpeg(image_path)
+
+        repeat_response = "# 正常开头\n\n" + "📷" * 50
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content=repeat_response)
+        mocker.patch("pdf2md.tools.image_analyzer._build_llm", return_value=mock_llm)
+
+        from pdf2md.tools.image_analyzer import describe_image
+
+        result = describe_image.invoke({"image_path": str(image_path), "prompt": "描述图像"})
+
+        assert "⚠️" in result
+        assert "正常开头" in result
+        assert "📷" * 50 not in result

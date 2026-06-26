@@ -147,15 +147,16 @@ async def _process_one_page(
     agent = _build_page_agent()
 
     prev_info = (
-        f"上一页图片路径：{prev_page_path}（如需检查拼接可用）"
+        f"上一页图片路径：`{prev_page_path}`\n（可选：需要检查跨页拼接时，可调用 describe_image 分析此图）"
         if prev_page_path
         else "（这是第一页，无上一页）"
     )
     user_message = (
         f"请处理第 {page_num} 页（共 {total_pages} 页）。\n\n"
-        f"当前页图片路径：{page_path}\n"
-        f"{prev_info}\n"
-        f"Markdown 输出文件：{output_path}\n"
+        f"以下是本次任务的路径参数，请原样复制到工具调用中，不要修改：\n"
+        f"- 当前页图片路径：`{page_path}`\n"
+        f"- {prev_info}\n"
+        f"- Markdown 输出文件路径：`{output_path}`\n"
     )
 
     async for event in agent.astream_events(

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import time
+from collections import Counter
 from pathlib import Path
 
 import httpx
@@ -21,7 +23,44 @@ from pdf2md.config import settings
 logger = logging.getLogger(__name__)
 
 
-# ── 可重试的异常判断 ───────────────────────────────────────────────────────
+# ── 重复输出检测 ──────────────────────────────────────────────────────────────
+
+# 匹配 1~6 字符的序列连续重复 20 次以上（覆盖单字符、emoji、短词）
+_REPEAT_RE = re.compile(r"(.{1,6})\1{19,}", re.DOTALL)
+
+
+def _detect_repetition(text: str) -> str | None:
+    """检测模型输出是否存在异常重复，返回描述字符串；正常则返回 None。"""
+    if not text or len(text) < 10:
+        return None
+
+    # 1. 连续重复序列（如 📷📷📷... 或 ▪▪▪...）
+    m = _REPEAT_RE.search(text)
+    if m:
+        seq = m.group(1)
+        count = len(re.findall(re.escape(seq), text))
+        return f"序列 {repr(seq)} 重复 {count} 次"
+
+    # 2. 相同行大量出现（如同一段话重复5次以上）
+    lines = [ln.strip() for ln in text.split("\n") if len(ln.strip()) >= 4]
+    if lines:
+        top_line, cnt = Counter(lines).most_common(1)[0]
+        if cnt >= 5:
+            return f"行重复 {cnt} 次: {top_line[:50]!r}"
+
+    return None
+
+
+def _truncate_at_repetition(text: str) -> str:
+    """截断重复部分，保留开头正常内容，附加警告。"""
+    m = _REPEAT_RE.search(text)
+    if m and m.start() > 0:
+        prefix = text[: m.start()].rstrip()
+        return prefix + "\n\n> ⚠️ 模型输出异常（重复内容），此部分已截断。"
+    # 没有合适截断点，直接截取前 1000 字符
+    return text[:1000] + "\n\n> ⚠️ 模型输出异常（重复内容），已截断。"
+
+
 
 def _is_rate_limit(exc: BaseException) -> bool:
     """判断是否为 rate limit 错误（HTTP 429）。"""
@@ -149,6 +188,41 @@ def describe_image(image_path: str, prompt: str) -> str:
     try:
         result = _invoke_llm_with_retry(llm, message)
         logger.info("图像描述完成，响应长度: %d 字符", len(result))
+
+        # ── 重复输出检测 ──────────────────────────────────────────────────
+        repeat_reason = _detect_repetition(result)
+        if repeat_reason:
+            logger.warning(
+                "检测到重复输出（%s），使用修正 prompt 重试: %s", repeat_reason, image_path
+            )
+            corrected_prompt = (
+                f"【重要】上次分析该图像时输出出现异常重复（{repeat_reason}），"
+                f"请重新仔细分析，不要重复输出相同字符或短语。\n\n"
+                f"原始要求：\n{prompt}"
+            )
+            corrected_message = HumanMessage(
+                content=[
+                    {"type": "text", "text": corrected_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}",
+                            "detail": "high",
+                        },
+                    },
+                ]
+            )
+            result = _invoke_llm_with_retry(llm, corrected_message)
+            logger.info("修正重试完成，响应长度: %d 字符", len(result))
+
+            # 重试后仍有重复 → 截断并附加警告
+            retry_reason = _detect_repetition(result)
+            if retry_reason:
+                logger.warning(
+                    "重试后仍有重复输出（%s），截断处理: %s", retry_reason, image_path
+                )
+                result = _truncate_at_repetition(result)
+
         return result
 
     except httpx.TimeoutException as exc:
