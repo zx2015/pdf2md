@@ -209,6 +209,7 @@ tasks/
 | `TASKS_DIR` | 任务存储根目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发 Web 任务数 | `3` |
 | `HOST` / `PORT` | Web 服务监听 | `0.0.0.0:8000` |
+| `LLM_SEED` | 视觉/编排 LLM 调用固定的随机数种子，配合 temperature=0 尽量提升结果一致性（best effort，非硬保证）| `42` |
 | `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒，为空闲超时非总耗时）| `120` |
 | `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限，防止重复输出循环无限生成）；留空则按模型自动探测（见 `model_registry.py`）| 自动探测 |
 | `RETRY_ATTEMPTS` | tenacity 重试总次数（含首次）| `4` |

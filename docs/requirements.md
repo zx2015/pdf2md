@@ -115,6 +115,7 @@
 | `PDF_DPI` | PDF 渲染分辨率 | `150` |
 | `TASKS_DIR` | 任务存储根目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发任务数 | `3` |
+| `LLM_SEED` | 视觉/编排 LLM 调用固定的随机数种子（best effort，非硬保证）| `42` |
 | `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒）| `120` |
 | `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限）；留空则按模型自动探测 | 自动探测 |
 | `RETRY_ATTEMPTS` | 视觉 LLM 重试总次数（含首次）| `4` |

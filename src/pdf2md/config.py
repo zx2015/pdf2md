@@ -31,6 +31,13 @@ class Settings(BaseSettings):
                                       # 不是"总耗时"超时。若模型陷入重复输出循环但仍在
                                       # 持续吐字符，此超时不会触发，必须靠 vision_max_tokens
                                       # 兜底限制最坏情况下的生成时长。
+    llm_seed: int | None = 42        # 视觉/编排 LLM 调用固定的随机数种子，配合已固定的
+                                      # temperature=0 尽量提升多次调用结果的一致性。
+                                      # 注意：这只是"best effort"优化，不是硬保证——实测
+                                      # 发现即使 temperature=0 + 固定 seed，SiliconFlow 等
+                                      # 共享云推理服务仍可能因服务端批处理（batching）导致
+                                      # 的浮点舍入误差差异而产生不同输出（"batch invariance"
+                                      # 问题，非本项目代码可控）。设为 None 可禁用该参数。
     vision_max_tokens: int | None = None  # 视觉模型单次输出的最大 token 数（硬性上限）。
                                       # 显式设置时（.env 的 VISION_MAX_TOKENS）优先级最高，
                                       # 固定生效；留空（None）时按 vision_chat_model 自动

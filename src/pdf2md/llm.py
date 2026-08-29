@@ -30,6 +30,13 @@ def build_chat_llm(
 ) -> "ChatOpenAI":
     """构建 ChatOpenAI 实例的底层公共逻辑，统一注入 max_retries 等参数。
 
+    固定使用 temperature=0（贪婪解码）+ settings.llm_seed（固定随机数种子，
+    可通过 .env 的 LLM_SEED 配置或设为空禁用），尽量提升多次调用结果的一致性。
+    注意：这只是"best effort"优化，不是硬保证——实测发现即使 temperature=0 +
+    固定 seed，共享云推理服务仍可能因服务端批处理（batching）导致的浮点舍入
+    误差差异而产生不同输出，这是行业共性的 "batch invariance" 问题，非本项目
+    代码可控。
+
     Args:
         model: 模型名称。
         api_key: 该 Provider 的 API Key，为空时不传（由 SDK 走默认环境变量解析）。
@@ -50,6 +57,8 @@ def build_chat_llm(
         "temperature": 0,
         "max_retries": settings.max_retries,
     }
+    if settings.llm_seed is not None:
+        kwargs["seed"] = settings.llm_seed
     if timeout is not None:
         kwargs["timeout"] = timeout
     if max_tokens is not None:

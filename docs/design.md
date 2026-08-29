@@ -214,6 +214,7 @@ class Settings(BaseSettings):
 
     pdf_dpi: int = 150
     temp_dir: str = "./tmp"          # 命令行模式临时目录
+    llm_seed: int | None = 42        # 固定随机数种子，配合 temperature=0 提升一致性（best effort）
     page_timeout: int = 120          # 单次视觉 LLM 调用超时（秒）
     vision_max_tokens: int | None = None  # 显式设置固定生效；None 时按模型自动探测
     max_retries: int = 2             # httpx 连接重试次数
@@ -238,6 +239,13 @@ api_key/base_url/model，`describe_image` 固定使用 `settings.vision_chat_mod
 `model_registry.get_model_limits(vision_chat_model)` 按分层兜底策略自动探测
 （项目内精确匹配表 → 可选依赖 litellm 的社区注册表 → 项目内前缀模糊匹配 →
 保守安全默认值），详见 `model_registry.py` 模块文档。
+
+两个构建函数都固定 `temperature=0` + `settings.llm_seed`（默认 42，`.env` 的
+`LLM_SEED` 可覆盖或设为空禁用），尽量提升多次调用结果的一致性。这只是
+best-effort 优化：实测即使 `temperature=0` + 固定 `seed`，SiliconFlow 等共享
+云推理服务仍可能因服务端批处理（batching）导致的浮点舍入误差差异而产生不同
+输出（"batch invariance" 问题），无法 100% 保证同一输入每次都得到位级一致
+的结果。
 
 ## 7. 前端设计
 
