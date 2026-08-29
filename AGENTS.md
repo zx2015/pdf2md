@@ -10,13 +10,15 @@ pdf2md 是一个基于 **LangGraph React Agent** 的 PDF 转 Markdown 工具，�
 ```
 src/pdf2md/
 ├── agent.py              # 核心：per-page Agent 循环、PageProcessingError、astream_conversion()
-├── config.py             # 环境变量配置（Settings dataclass）
-├── task_manager.py       # 任务 CRUD + SQLite + 目录管理 + resume_from_page
+├── config.py             # 环境变量配置（Settings，双 Provider）
+├── llm.py                # build_vision_llm() / build_orchestrator_llm() 双 Provider 构建函数
+├── task_manager.py       # 任务 CRUD + SQLite + 目录管理 + resume_from_page + model
 ├── streaming.py          # asyncio pub/sub，为 SSE 提供实时事件总线
 ├── cli.py                # 命令行：convert（单文件）| serve（启动 Web）
 ├── tools/
 │   ├── pdf_to_image.py   # Tool: pdf_to_images — PDF 每页 → JPEG
-│   ├── image_analyzer.py # Tool: describe_image — 图像 → Markdown 文本（含 tenacity 重试）
+│   ├── image_analyzer.py # Tool: describe_image — 图像 → Markdown 文本（含 tenacity 重试、
+│                         #      重复输出检测、任务级视觉模型切换）
 │   └── file_tools.py     # Tool: read_file_lines / write_file_lines
 └── web/
     ├── app.py            # FastAPI 应用工厂 + 所有 API 路由（含 /resume 端点）
@@ -39,7 +41,7 @@ docs/
 
 ```bash
 pip install -e ".[dev]"
-cp .env.example .env   # 填写 OPENAI_API_KEY
+cp .env.example .env   # 填写 SILICONFLOW_API_KEY / OPENAI_API_KEY（详见下方"环境变量"）
 ```
 
 ## 运行命令
@@ -151,13 +153,14 @@ tasks/
 | 工具 | 输入 | 输出 |
 |------|------|------|
 | `pdf_to_images` | pdf_path, output_dir, dpi | JSON 字符串（路径列表）|
-| `describe_image` | image_path, prompt | 原始 Markdown 文本（LLM 直接响应）|
+| `describe_image` | image_path, prompt | 原始 Markdown 文本（视觉 LLM 直接响应）|
 | `read_file_lines` | path, start_line, end_line | 文本内容（支持负数索引）|
 | `write_file_lines` | path, content, mode | 写入结果描述 |
 
 ### 错误处理约定
 
 - `describe_image` 内部有 tenacity 重试（网络错误/超时/rate limit），失败后返回 `"⚠️ 错误：..."` 字符串
+- 检测到重复输出时用自然语言批评性 prompt 重试一次，仍重复则直接截断并附加警告
 - 工具内部用 `logging`，禁止 `print`
 - 单页 Agent 失败时由外层循环重试最多 3 次；3 次后抛 `PageProcessingError`
 - mock LLM 时 patch `pdf2md.tools.image_analyzer._build_llm`
@@ -167,24 +170,46 @@ tasks/
 | 包 | 用途 |
 |----|------|
 | `langgraph` | React Agent 框架 |
-| `langchain-openai` | LLM 调用（GPT-4o vision）|
+| `langchain-openai` | LLM 调用（SiliconFlow 视觉 + 编排 Agent，均为 OpenAI-compatible）|
 | `pymupdf` | PDF 渲染为图像 |
 | `fastapi` + `uvicorn` | Web 服务 |
 | `pydantic-settings` | 环境变量配置 |
 | `tenacity` | describe_image LLM 调用重试 |
 
+## 双 Provider 架构
+
+- **视觉 Provider**（固定为 SiliconFlow）：`tools/image_analyzer.py` 的 `describe_image` 实际调用，模型固定使用 `settings.vision_chat_model`，不支持按任务切换。
+- **编排 Agent Provider**（独立配置，任意 OpenAI-compatible 服务）：`agent.py` 的 `_build_page_agent()` 使用，需支持 Tool Calling，与视觉 Provider 完全独立（并非所有支持视觉理解的模型都同时支持 Tool Calling）。
+- `llm.py` 提供 `build_vision_llm()` / `build_orchestrator_llm()` 两个构建函数。
+
 ## 环境变量
+
+**Provider 1：视觉 LLM（固定为 SiliconFlow）**
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `SILICONFLOW_API_KEY` | 必填 | — |
+| `SILICONFLOW_BASE_URL` | SiliconFlow API 端点 | `https://api.siliconflow.cn/v1` |
+| `VISION_CHAT_MODEL` | `describe_image` 固定使用的视觉模型 | `Qwen/Qwen3.5-4B` |
+
+**Provider 2：编排 Agent（独立配置）**
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `OPENAI_API_KEY` | 必填 | — |
 | `OPENAI_BASE_URL` | 自定义 API 端点 | OpenAI 官方 |
-| `LLM_MODEL` | 视觉模型名称 | `gpt-4o` |
+| `ORCHESTRATOR_MODEL` | 编排 Agent 模型，需支持 Tool Calling | `gpt-4o-mini` |
+
+**其他**
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
 | `PDF_DPI` | PDF 渲染分辨率 | `150` |
 | `TASKS_DIR` | 任务存储根目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发 Web 任务数 | `3` |
 | `HOST` / `PORT` | Web 服务监听 | `0.0.0.0:8000` |
-| `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒）| `120` |
+| `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒，为空闲超时非总耗时）| `120` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限，防止重复输出循环无限生成）| `4000` |
 | `RETRY_ATTEMPTS` | tenacity 重试总次数（含首次）| `4` |
 | `RETRY_WAIT_MIN` | 首次重试等待秒数 | `2` |
 | `RETRY_WAIT_MAX` | 最大重试等待秒数 | `60` |

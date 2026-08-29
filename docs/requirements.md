@@ -90,18 +90,34 @@
 
 ### 3.4 配置
 
-通过 `.env` 环境变量配置：
+通过 `.env` 环境变量配置，分为两个独立 Provider：
+
+**Provider 1：视觉 LLM（固定为 SiliconFlow）**
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `OPENAI_API_KEY` | API Key（必填）| — |
-| `OPENAI_BASE_URL` | 自定义 API 端点 | OpenAI 官方 |
-| `LLM_MODEL` | 视觉模型名称 | `gpt-4o` |
+| `SILICONFLOW_API_KEY` | SiliconFlow API Key（必填）| — |
+| `SILICONFLOW_BASE_URL` | SiliconFlow API 端点 | `https://api.siliconflow.cn/v1` |
+| `VISION_CHAT_MODEL` | 视觉模型（固定使用，不支持任务级覆盖）| `Qwen/Qwen3.5-4B` |
+
+**Provider 2：编排 Agent（独立配置，任意 OpenAI 兼容服务）**
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `OPENAI_API_KEY` | 编排 Agent API Key（必填）| — |
+| `OPENAI_BASE_URL` | 编排 Agent API 端点 | OpenAI 官方 |
+| `ORCHESTRATOR_MODEL` | 编排 Agent 模型，需支持 Tool Calling | `gpt-4o-mini` |
+
+**其他**
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
 | `PDF_DPI` | PDF 渲染分辨率 | `150` |
 | `TASKS_DIR` | 任务存储根目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发任务数 | `3` |
-| `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒）| `120` |
-| `RETRY_ATTEMPTS` | LLM 重试总次数（含首次）| `4` |
+| `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒）| `120` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限）| `4000` |
+| `RETRY_ATTEMPTS` | 视觉 LLM 重试总次数（含首次）| `4` |
 | `RETRY_WAIT_MIN` | 首次重试等待秒数 | `2` |
 | `RETRY_WAIT_MAX` | 最大退避等待秒数 | `60` |
 | `RATE_LIMIT_WAIT` | 429 时额外等待秒数 | `15` |
@@ -109,5 +125,5 @@
 ## 4. 约束
 
 - 运行环境：Python 3.11+
-- LLM：需支持视觉输入（Vision）的模型，通过 OpenAI-compatible API 访问
-- 外部依赖：OpenAI API 或兼容接口（如 LiteLLM、阿里云 DashScope 等）
+- 视觉 Provider：固定为 SiliconFlow（OpenAI-compatible API），模型通过 `VISION_CHAT_MODEL` 固定配置
+- 编排 Agent Provider：需支持 Tool Calling 的 OpenAI-compatible 模型，与视觉 Provider 独立配置

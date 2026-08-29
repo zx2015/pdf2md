@@ -9,7 +9,7 @@
 ## 功能特性
 
 - 📄 **PDF 渲染** — 将每页 PDF 渲染为高清 JPEG 图像
-- 🤖 **智能识别** — 使用支持视觉的 LLM（默认 GPT-4o）理解页面内容
+- 🤖 **智能识别** — 使用支持视觉的 LLM 理解页面内容
 - 📝 **文字提取** — 保留标题层级、段落结构
 - 📊 **表格转换** — 自动识别表格，输出标准 Markdown 表格
 - 📐 **图表处理** — 流程图、甘特图、思维导图、时序图等转为 Mermaid 代码块
@@ -51,11 +51,16 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-编辑 `.env`，填入必要的配置：
+编辑 `.env`，填入两个 Provider 的必要配置（详见下方[双 Provider 架构](#双-provider-架构)）：
 
 ```dotenv
-OPENAI_API_KEY=sk-your-api-key-here
-LLM_MODEL=gpt-4o
+# Provider 1：视觉 LLM（固定为 SiliconFlow）
+SILICONFLOW_API_KEY=sk-your-siliconflow-api-key-here
+VISION_CHAT_MODEL=Qwen/Qwen3.5-4B
+
+# Provider 2：编排 Agent（可指向任意 OpenAI 兼容服务）
+OPENAI_API_KEY=sk-your-orchestrator-api-key-here
+ORCHESTRATOR_MODEL=gpt-4o-mini
 ```
 
 ### 3. 启动 Web 服务
@@ -77,11 +82,21 @@ python -m pdf2md convert your_document.pdf -o output.md
 ## 安装要求
 
 - Python **3.11+**
-- 支持**视觉输入（Vision）** 的 LLM API，例如：
-  - OpenAI GPT-4o / GPT-4o-mini
-  - Azure OpenAI
-  - 阿里云 Qwen-VL
-  - SiliconFlow / 其他兼容 OpenAI 接口的服务
+- **视觉 Provider**：固定为 [SiliconFlow](https://cloud.siliconflow.cn)（OpenAI 兼容接口），需一个 SiliconFlow API Key，且模型需支持图像输入（image_url）
+- **编排 Agent Provider**：任意支持 Tool Calling 的 OpenAI 兼容服务（OpenAI 官方 / Azure / SiliconFlow / 自建 LiteLLM、Ollama 网关等）
+
+---
+
+## 双 Provider 架构
+
+pdf2md 使用**两个相互独立的 LLM Provider**：
+
+| Provider | 用途 | 配置方式 | 端点 |
+|---|---|---|---|
+| **视觉**（SiliconFlow） | `describe_image` 实际识别页面图像内容 | 由 `.env` 的 `VISION_CHAT_MODEL` 固定配置 | 固定为 `https://api.siliconflow.cn/v1` |
+| **编排 Agent** | 驱动 LangGraph ReAct Agent 决定调用哪个工具（`read_file_lines`/`describe_image`/`write_file_lines`）及顺序，需具备 Tool Calling 能力 | 由 `.env` 的 `ORCHESTRATOR_MODEL` 固定配置 | 任意 OpenAI 兼容端点（`OPENAI_BASE_URL`，留空则为 OpenAI 官方） |
+
+两者拆分的原因：并非所有支持视觉理解的模型都同时支持 Tool Calling（决定 ReAct Agent 是否能正常调用工具），因此编排 Agent 固定使用一个支持 Tool Calling 的独立模型，与实际负责图像识别的视觉模型分开配置、互不影响。
 
 ---
 
@@ -89,39 +104,56 @@ python -m pdf2md convert your_document.pdf -o output.md
 
 所有配置项通过项目根目录的 `.env` 文件设置：
 
+### Provider 1：视觉 LLM（SiliconFlow，必填）
+
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `OPENAI_API_KEY` | API Key（**必填**） | — |
-| `LLM_MODEL` | 视觉模型名称 | `gpt-4o` |
-| `OPENAI_BASE_URL` | 自定义 API 端点（第三方服务时填写） | OpenAI 官方 |
+| `SILICONFLOW_API_KEY` | SiliconFlow API Key（**必填**） | — |
+| `SILICONFLOW_BASE_URL` | SiliconFlow API 端点，一般无需修改 | `https://api.siliconflow.cn/v1` |
+| `VISION_CHAT_MODEL` | `describe_image` 固定使用的视觉模型 | `Qwen/Qwen3.5-4B` |
+
+> 该模型固定通过 `.env` 配置，不支持在 Web 界面或命令行按任务切换；修改后需重启服务生效。
+
+### Provider 2：编排 Agent（可自定义，必填）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `OPENAI_API_KEY` | 编排 Agent Provider 的 API Key（**必填**） | — |
+| `OPENAI_BASE_URL` | 编排 Agent Provider 的 API 端点 | OpenAI 官方 |
+| `ORCHESTRATOR_MODEL` | 编排 Agent 使用的模型，需支持 Tool Calling | `gpt-4o-mini` |
+
+### 其他配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
 | `PDF_DPI` | PDF 渲染分辨率，越高越清晰但处理更慢 | `150` |
 | `HOST` | Web 服务监听地址 | `0.0.0.0` |
 | `PORT` | Web 服务监听端口 | `8000` |
 | `TASKS_DIR` | 任务文件存储目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发转换任务数 | `3` |
-| `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒） | `120` |
-| `RETRY_ATTEMPTS` | LLM 调用重试总次数（含首次） | `4` |
+| `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒，为空闲超时非总耗时） | `120` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限） | `4000` |
+| `RETRY_ATTEMPTS` | 视觉 LLM 调用重试总次数（含首次） | `4` |
 | `RETRY_WAIT_MIN` | 首次重试最小等待秒数 | `2` |
 | `RETRY_WAIT_MAX` | 最大退避等待秒数 | `60` |
 | `RATE_LIMIT_WAIT` | 触发 Rate Limit（429）时额外等待秒数 | `15` |
 
-### 使用第三方 LLM 服务示例
+### 编排 Agent Provider 自定义示例
 
 ```dotenv
-# 阿里云 Qwen-VL
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# 使用 OpenAI 官方
 OPENAI_API_KEY=sk-xxx
-LLM_MODEL=qwen-vl-plus
+ORCHESTRATOR_MODEL=gpt-4o-mini
 
-# SiliconFlow
+# 使用自建 LiteLLM 网关
+OPENAI_BASE_URL=http://localhost:4000/v1
+OPENAI_API_KEY=sk-xxx
+ORCHESTRATOR_MODEL=qwen-plus
+
+# 也指向 SiliconFlow（与视觉 Provider 使用不同的 Key/模型均可）
 OPENAI_BASE_URL=https://api.siliconflow.cn/v1
 OPENAI_API_KEY=sk-xxx
-LLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
-
-# 本地 Ollama
-OPENAI_BASE_URL=http://localhost:11434/v1
-OPENAI_API_KEY=ollama
-LLM_MODEL=llava
+ORCHESTRATOR_MODEL=Qwen/Qwen2.5-72B-Instruct
 ```
 
 ---
@@ -143,7 +175,7 @@ astream_conversion(pdf, output, images_dir, start_page)
           │
           └─ 全新 LangGraph Agent（独立上下文，无溢出风险）
                 ├─ read_file_lines    读取已写 Markdown 末尾 15 行（了解上下文）
-                ├─ describe_image     调用 LLM 识别当前页（含 tenacity 重试）
+                ├─ describe_image     调用视觉 LLM 识别当前页（含 tenacity 重试）
                 └─ write_file_lines   追加到输出文件
           │
           失败重试 3 次 → PageProcessingError → 记录断点 → 可继续
@@ -202,7 +234,7 @@ src/pdf2md/
 ├── cli.py              # 命令行入口
 ├── tools/
 │   ├── pdf_to_image.py     # Tool: PDF → JPEG
-│   ├── image_analyzer.py   # Tool: describe_image（LLM 视觉理解）
+│   ├── image_analyzer.py   # Tool: describe_image（视觉 LLM）
 │   └── file_tools.py       # Tool: read_file_lines / write_file_lines
 └── web/
     ├── app.py              # FastAPI 路由

@@ -12,6 +12,16 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _reset_llm_cache():
+    """每个测试前后重置全局缓存的 LLM 单例，避免跨测试复用旧的 mock 实例。"""
+    from pdf2md.tools import image_analyzer
+
+    image_analyzer._reset_llm_cache()
+    yield
+    image_analyzer._reset_llm_cache()
+
+
 @pytest.fixture
 def sample_page_analysis_json() -> str:
     """返回单页分析结果的 JSON 字符串（用于测试 assemble_markdown）。"""

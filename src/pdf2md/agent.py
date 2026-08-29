@@ -7,12 +7,12 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
 
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from pdf2md.config import settings
+from pdf2md.llm import build_orchestrator_llm
 from pdf2md.tools.file_tools import read_file_lines, write_file_lines
-from pdf2md.tools.image_analyzer import describe_image
+from pdf2md.tools.image_analyzer import _detect_repetition, describe_image
 from pdf2md.tools.pdf_to_image import pdf_to_images
 
 logger = logging.getLogger(__name__)
@@ -76,24 +76,16 @@ prompt 应包含：
 """
 
 
-def _build_llm() -> ChatOpenAI:
-    kwargs: dict = {
-        "model": settings.llm_model,
-        "temperature": 0,
-        "streaming": False,
-        "max_retries": settings.max_retries,
-    }
-    if settings.openai_api_key:
-        kwargs["api_key"] = settings.openai_api_key
-    if settings.openai_base_url:
-        kwargs["base_url"] = settings.openai_base_url
-    return ChatOpenAI(**kwargs)
-
-
 def _build_page_agent():
-    """为单页处理创建全新的 LangGraph React Agent（无共享状态，无上下文溢出风险）。"""
+    """为单页处理创建全新的 LangGraph React Agent（无共享状态，无上下文溢出风险）。
+
+    使用独立的编排 Agent Provider（settings.openai_api_key/openai_base_url +
+    settings.orchestrator_model，需具备 Tool Calling 能力），与视觉 Provider
+    （固定为 SiliconFlow，settings.vision_chat_model）完全独立——describe_image
+    内部固定使用 settings.vision_chat_model 实际调用视觉 LLM。
+    """
     return create_react_agent(
-        _build_llm(),
+        build_orchestrator_llm(streaming=False),
         tools=[describe_image, read_file_lines, write_file_lines],
         prompt=_PAGE_SYSTEM_PROMPT,
     )
@@ -136,6 +128,10 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
+_THINKING_CHECK_THRESHOLD = 200  # 累积多少字符后开始检测
+_THINKING_CHECK_INTERVAL = 100   # 每新增多少字符检测一次
+
+
 async def _process_one_page(
     page_path: str,
     prev_page_path: str | None,
@@ -159,6 +155,10 @@ async def _process_one_page(
         f"- Markdown 输出文件路径：`{output_path}`\n"
     )
 
+    accumulated_thinking = ""
+    last_checked_len = 0
+    repetition_detected: str | None = None
+
     async for event in agent.astream_events(
         {"messages": [("user", user_message)]},
         config={"recursion_limit": 20},
@@ -166,7 +166,29 @@ async def _process_one_page(
     ):
         log_entry = _format_langgraph_event(event)
         if log_entry:
+            # ── Agent thinking 重复输出检测 ──────────────────────────────
+            if log_entry["type"] == "agent_thinking":
+                accumulated_thinking += log_entry["content"]
+                new_len = len(accumulated_thinking)
+                if (
+                    new_len >= _THINKING_CHECK_THRESHOLD
+                    and new_len - last_checked_len >= _THINKING_CHECK_INTERVAL
+                ):
+                    last_checked_len = new_len
+                    reason = _detect_repetition(accumulated_thinking)
+                    if reason:
+                        repetition_detected = reason
+                        logger.warning(
+                            "Agent thinking 出现重复输出（%s），中断第 %d 页处理",
+                            reason, page_num,
+                        )
+                        break  # 终止 astream_events 迭代
             yield log_entry
+
+    if repetition_detected:
+        raise RuntimeError(
+            f"Agent thinking 出现重复输出（{repetition_detected}），第 {page_num} 页已中断"
+        )
 
 
 async def astream_conversion(

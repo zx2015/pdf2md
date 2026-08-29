@@ -17,7 +17,7 @@ agent.astream_conversion(pdf, output, images_dir, task_id, start_page=1)
     │
     └─ Step 2: for page_N in pages[start_page:]:
           └─ _process_one_page()  ← 每页独立 LangGraph Agent 实例
-                describe_image(page_N.jpg, prompt)  → Markdown 文本
+                describe_image(page_N.jpg, prompt)  → 视觉 LLM 识别当前页
                 read_file_lines(output.md, -15)     → 末尾上下文
                 write_file_lines(output.md, content, append)
                 失败 → 外层重试最多 3 次 → PageProcessingError → 记录断点
@@ -28,7 +28,9 @@ agent.astream_conversion(pdf, output, images_dir, task_id, start_page=1)
 - `task_manager.py` — 任务 CRUD（SQLite），含 `resume_from_page` 字段和 `set_resume_page()`
 - `streaming.py` — asyncio pub/sub（`subscribe/publish/close`）
 - `agent.py` — `PageProcessingError`, `_build_page_agent()`, `_process_one_page()`, `astream_conversion()`
-- `tools/image_analyzer.py` — `describe_image(image_path, prompt)`，含 tenacity 重试
+- `llm.py` — `build_vision_llm()` / `build_orchestrator_llm()`（双 Provider 构建函数）
+- `tools/image_analyzer.py` — `describe_image(image_path, prompt)`，固定使用 `settings.vision_chat_model`，
+  含 tenacity 重试、重复输出检测
 - `tools/file_tools.py` — `read_file_lines` / `write_file_lines`
 - `tools/pdf_to_image.py` — `pdf_to_images`
 
@@ -66,7 +68,7 @@ PYTHONPATH=src pytest -m "not e2e"   # 未安装包时使用
 | 工具 | 输入 | 输出 |
 |------|------|------|
 | `pdf_to_images` | pdf_path, output_dir, dpi | JSON 路径列表 |
-| `describe_image` | image_path, prompt | 原始文本（LLM 直接响应）|
+| `describe_image` | image_path, prompt | 原始文本（视觉 LLM 直接响应）|
 | `read_file_lines` | path, start_line, end_line | 文本内容（支持负数索引）|
 | `write_file_lines` | path, content, mode | 写入结果描述 |
 
@@ -89,21 +91,44 @@ PYTHONPATH=src pytest -m "not e2e"   # 未安装包时使用
 - 所有工具用 `@tool` 装饰，docstring 作为 LLM 工具描述（不要省略）
 - 工具内部用 `logging`，禁止 `print`
 - `describe_image` 失败时返回 `"⚠️ 错误：..."` 字符串，不抛异常
+- 检测到重复输出时用自然语言批评性 prompt 重试一次，仍重复则直接截断并附加警告
 - mock LLM 时 patch `pdf2md.tools.image_analyzer._build_llm`
 - mock per-page agent 时 patch `pdf2md.agent._build_page_agent`
 
+## 双 Provider 架构
+
+- **视觉 Provider**（固定为 SiliconFlow）：`tools/image_analyzer.py` 的 `describe_image` 实际调用，模型固定使用 `settings.vision_chat_model`，不支持按任务切换。
+- **编排 Agent Provider**（独立配置，任意 OpenAI-compatible 服务）：`agent.py` 的 `_build_page_agent()` 使用，需支持 Tool Calling，与视觉 Provider 完全独立（并非所有支持视觉理解的模型都同时支持 Tool Calling）。
+- `llm.py` 提供 `build_vision_llm()` / `build_orchestrator_llm()` 两个构建函数。
+
 ## 环境变量
+
+**Provider 1：视觉 LLM（固定为 SiliconFlow）**
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `SILICONFLOW_API_KEY` | 必填 | — |
+| `SILICONFLOW_BASE_URL` | SiliconFlow API 端点 | `https://api.siliconflow.cn/v1` |
+| `VISION_CHAT_MODEL` | `describe_image` 固定使用的视觉模型（需支持 image_url）| `Qwen/Qwen3.5-4B` |
+
+**Provider 2：编排 Agent（独立配置）**
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `OPENAI_API_KEY` | 必填 | — |
-| `LLM_MODEL` | 视觉模型（需支持 image_url）| `gpt-4o` |
 | `OPENAI_BASE_URL` | 自定义 API 端点 | OpenAI 官方 |
+| `ORCHESTRATOR_MODEL` | 编排 Agent 模型，需支持 Tool Calling | `gpt-4o-mini` |
+
+**其他**
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
 | `PDF_DPI` | PDF 渲染分辨率 | `150` |
 | `TASKS_DIR` | 任务存储根目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发 Web 任务数 | `3` |
 | `HOST` / `PORT` | Web 服务监听 | `0.0.0.0:8000` |
-| `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒）| `120` |
+| `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒，为空闲超时非总耗时）| `120` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限，防止重复输出循环无限生成）| `4000` |
 | `RETRY_ATTEMPTS` | tenacity 重试总次数 | `4` |
 | `RETRY_WAIT_MIN` / `RETRY_WAIT_MAX` | 退避等待范围（秒）| `2` / `60` |
 | `RATE_LIMIT_WAIT` | 429 时额外等待（秒）| `15` |

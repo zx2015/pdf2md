@@ -70,8 +70,13 @@ def write_file_lines(path: str, content: str, mode: str = "append") -> str:
               'overwrite' — 覆盖整个文件
 
     Returns:
-        写入结果描述（行数、字符数）。
+        写入结果描述（行数、字符数）。若 mode 参数非法，返回以 "⚠️ 错误：" 开头的错误描述。
     """
+    if mode not in ("append", "overwrite"):
+        error_msg = f"⚠️ 错误：mode 参数非法（{mode!r}），仅支持 'append' 或 'overwrite'"
+        logger.error(error_msg)
+        return error_msg
+
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 

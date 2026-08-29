@@ -139,25 +139,50 @@ class TestDescribeImage:
         assert mock_llm.invoke.call_count == 4
 
 
+class TestVisionModelFixed:
+    def test_describe_image_uses_configured_model(self, tmp_path, mocker):
+        """describe_image 应固定使用 settings.vision_chat_model 调用 _build_llm。"""
+        image_path = tmp_path / "page_001.jpg"
+        _create_dummy_jpeg(image_path)
+
+        from pdf2md.config import settings
+
+        captured_models = []
+
+        def fake_build_llm(model):
+            captured_models.append(model)
+            m = MagicMock()
+            m.invoke.return_value = MagicMock(content="内容")
+            return m
+
+        mocker.patch("pdf2md.tools.image_analyzer._build_llm", side_effect=fake_build_llm)
+
+        from pdf2md.tools.image_analyzer import describe_image
+
+        describe_image.invoke({"image_path": str(image_path), "prompt": "描述图像"})
+
+        assert captured_models == [settings.vision_chat_model]
+
+
 class TestRepetitionDetection:
     def test_detect_single_char_repetition(self):
-        """单字符连续重复 20+ 次应被检测为异常。"""
+        """单字符连续重复 50+ 次应被检测为异常。"""
         from pdf2md.tools.image_analyzer import _detect_repetition
 
         normal = "# 标题\n\n这是正常的内容，没有重复。"
         assert _detect_repetition(normal) is None
 
-        emoji_repeat = "📷" * 30
+        emoji_repeat = "📷" * 55
         assert _detect_repetition(emoji_repeat) is not None
 
-        bullet_repeat = "▪" * 25 + " 一些文字"
+        bullet_repeat = "▪" * 55 + " 一些文字"
         assert _detect_repetition(bullet_repeat) is not None
 
     def test_detect_line_repetition(self):
-        """相同行重复 5+ 次应被检测为异常。"""
+        """相同行重复 50+ 次应被检测为异常。"""
         from pdf2md.tools.image_analyzer import _detect_repetition
 
-        repeated = ("这是一行内容\n" * 6) + "其他内容"
+        repeated = ("这是一行内容\n" * 51) + "其他内容"
         result = _detect_repetition(repeated)
         assert result is not None
         assert "重复" in result

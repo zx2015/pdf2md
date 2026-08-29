@@ -51,6 +51,7 @@ async def _run_task(task_id: str) -> None:
                 "timestamp": datetime.now().isoformat(),
             })
 
+            page_count = 0
             async for log_entry in astream_conversion(
                 str(task.input_pdf),
                 str(task.output_md),
@@ -58,9 +59,15 @@ async def _run_task(task_id: str) -> None:
                 task_id=task_id,
                 start_page=start_page,
             ):
+                if "total" in log_entry:
+                    page_count = log_entry["total"]
                 await emit(log_entry)
 
-            page_count = len(list(task.images_dir.glob("page_*.jpg")))
+            if page_count == 0:
+                # 兜底：极端情况下（如断点续传时全部页面已处理完毕，未产生
+                # 任何 page_* 事件）退回目录扫描，避免误报 0 页。
+                page_count = len(list(task.images_dir.glob("page_*.jpg")))
+
             task_manager.update_status(task_id, "completed", page_count=page_count)
             task_manager.set_resume_page(task_id, None)  # 完成后清除断点
             await emit({

@@ -49,12 +49,17 @@ def init_db() -> None:
                 updated_at        TEXT NOT NULL,
                 page_count        INTEGER,
                 error             TEXT,
-                resume_from_page  INTEGER
+                resume_from_page  INTEGER,
+                model             TEXT
             )
         """)
-        # 迁移：为已有数据库添加 resume_from_page 列
+        # 迁移：为已有数据库添加 resume_from_page / model 列
         try:
             conn.execute("ALTER TABLE tasks ADD COLUMN resume_from_page INTEGER")
+        except Exception:
+            pass  # 列已存在，忽略
+        try:
+            conn.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
         except Exception:
             pass  # 列已存在，忽略
 
@@ -69,6 +74,8 @@ class Task:
     page_count: int | None = None
     error: str | None = None
     resume_from_page: int | None = None  # 断点续传：失败时记录的页码（1-indexed）
+    model: str | None = None  # 保留字段（当前未在 API/UI 中使用，视觉模型固定通过
+                              # settings.vision_chat_model 配置，不支持任务级覆盖）
 
     @property
     def task_dir(self) -> Path:
@@ -105,6 +112,7 @@ class Task:
             "page_count": self.page_count,
             "error": self.error,
             "resume_from_page": self.resume_from_page,
+            "model": self.model,
         }
 
 
@@ -118,22 +126,30 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         page_count=row["page_count"],
         error=row["error"],
         resume_from_page=row["resume_from_page"],
+        model=row["model"] if "model" in row.keys() else None,
     )
 
 
-def create_task(filename: str) -> Task:
-    """创建新任务，建立目录结构，写入数据库。"""
+def create_task(filename: str, model: str | None = None) -> Task:
+    """创建新任务，建立目录结构，写入数据库。
+
+    Args:
+        model: 保留参数，当前未使用（视觉模型固定通过 settings.vision_chat_model
+               配置，不支持任务级覆盖）。
+    """
     task_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
-    task = Task(id=task_id, filename=filename, status="pending", created_at=now, updated_at=now)
+    task = Task(
+        id=task_id, filename=filename, status="pending", created_at=now, updated_at=now, model=model
+    )
 
     task.task_dir.mkdir(parents=True, exist_ok=True)
     task.images_dir.mkdir(exist_ok=True)
 
     with _db() as conn:
         conn.execute(
-            "INSERT INTO tasks (id, filename, status, created_at, updated_at) VALUES (?,?,?,?,?)",
-            (task.id, task.filename, task.status, task.created_at, task.updated_at),
+            "INSERT INTO tasks (id, filename, status, created_at, updated_at, model) VALUES (?,?,?,?,?,?)",
+            (task.id, task.filename, task.status, task.created_at, task.updated_at, task.model),
         )
     return task
 
