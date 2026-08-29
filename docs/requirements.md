@@ -116,7 +116,7 @@
 | `TASKS_DIR` | 任务存储根目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发任务数 | `3` |
 | `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒）| `120` |
-| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限）| `4000` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限）；留空则按模型自动探测 | 自动探测 |
 | `RETRY_ATTEMPTS` | 视觉 LLM 重试总次数（含首次）| `4` |
 | `RETRY_WAIT_MIN` | 首次重试等待秒数 | `2` |
 | `RETRY_WAIT_MAX` | 最大退避等待秒数 | `60` |

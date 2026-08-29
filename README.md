@@ -100,6 +100,18 @@ pdf2md 使用**两个相互独立的 LLM Provider**：
 
 ---
 
+## 视觉模型容量自动探测
+
+不同视觉模型的 context window / 最大输出 token 数差异很大，`VISION_MAX_TOKENS` 若配置不当（过大会被 API 拒绝、过小则浪费模型能力，配置缺失则有陷入重复输出循环无限生成的风险）。`pdf2md/model_registry.py` 提供分层兜底的自动探测：
+
+1. **`.env` 显式配置**（`VISION_MAX_TOKENS`）—— 优先级最高，设置后固定生效，不再自动探测。
+2. **项目内置精确匹配表** —— 已在本项目中实测验证过的模型（如 `Qwen/Qwen3.5-4B`）。
+3. **可选依赖 `litellm` 的社区维护注册表** —— `pip install pdf2md[model-registry]` 安装后自动启用，覆盖数百个主流模型；未安装时自动跳过此层。
+4. **项目内置前缀模糊匹配** —— 覆盖同系列但未逐一登记的型号（如 `Qwen/Qwen3-VL-*` 系列）。
+5. **保守安全默认值** —— 均未命中时使用，并记录 WARNING 日志提示手动配置。
+
+---
+
 ## 配置说明
 
 所有配置项通过项目根目录的 `.env` 文件设置：
@@ -132,7 +144,7 @@ pdf2md 使用**两个相互独立的 LLM Provider**：
 | `TASKS_DIR` | 任务文件存储目录 | `./tasks` |
 | `MAX_CONCURRENT_TASKS` | 最大并发转换任务数 | `3` |
 | `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒，为空闲超时非总耗时） | `120` |
-| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限） | `4000` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限）；留空则按模型自动探测 | 自动探测 |
 | `RETRY_ATTEMPTS` | 视觉 LLM 调用重试总次数（含首次） | `4` |
 | `RETRY_WAIT_MIN` | 首次重试最小等待秒数 | `2` |
 | `RETRY_WAIT_MAX` | 最大退避等待秒数 | `60` |

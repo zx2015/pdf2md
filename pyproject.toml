@@ -32,6 +32,12 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-mock>=3.12.0",
 ]
+model-registry = [
+    # 可选依赖：复用 litellm 社区维护的模型元数据（context window / 最大输出
+    # token 数）注册表，作为 config.model_registry 的 Layer C 数据源。未安装
+    # 时该层自动跳过，退回项目内置的静态表 + 前缀匹配 + 安全默认值。
+    "litellm>=1.0.0",
+]
 
 [project.scripts]
 pdf2md = "pdf2md.cli:main"

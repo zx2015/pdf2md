@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import logging
 import re
 import time
@@ -215,6 +216,37 @@ def _before_sleep(retry_state: RetryCallState) -> None:
         logger.warning("LLM 调用失败，第 %d 次重试: %s", attempt, exc)
 
 
+# ── 硬性 wall-clock 超时 ──────────────────────────────────────────────────────
+# httpx/openai 客户端的 timeout 是"读空闲超时"：只要 socket 上有任意字节到达
+# （包括跨多层代理/网络设备产生的 keepalive 噪声）就会重置计时器，因此在复杂
+# 网络环境下无法保证总耗时上限——曾观测到单次调用因此挂起数十分钟至数小时才
+# 报错（RemoteProtocolError），远超配置的 page_timeout。这里用独立线程池 +
+# Future.result(timeout=...) 实现应用层的硬性总耗时上限，不依赖网络库对"超时"
+# 语义的实现细节；超时后原调用线程可能仍在后台运行直至自然结束/报错并被丢弃，
+# 但不会阻塞主流程，重试/断点续传逻辑可以立即继续。
+_INVOKE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(settings.max_concurrent_llm_calls, 1),
+    thread_name_prefix="vision-llm-invoke",
+)
+
+
+def _invoke_with_hard_timeout(llm, message: HumanMessage, timeout: float):
+    """在独立线程中调用 llm.invoke()，超过 timeout 秒未返回则抛出超时异常。
+
+    与直接调用 llm.invoke() 相比，这里的 timeout 是真正的总耗时上限，不会被
+    连接上出现的任何字节（含 keepalive）重置。
+    """
+    future = _INVOKE_EXECUTOR.submit(llm.invoke, [message])
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError as exc:
+        # 无法真正中断底层网络调用（线程会在后台自然结束），但主流程不再等待，
+        # 转换为 httpx.TimeoutException 以复用现有的重试/错误处理逻辑。
+        raise httpx.TimeoutException(
+            f"硬性总耗时超时（超过 {timeout}s 未返回，可能是网络/代理层导致读超时未生效）"
+        ) from exc
+
+
 @retry(
     retry=retry_if_exception(_is_retryable),
     wait=wait_exponential(
@@ -227,8 +259,16 @@ def _before_sleep(retry_state: RetryCallState) -> None:
     reraise=True,
 )
 def _invoke_llm_with_retry(llm, message: HumanMessage) -> str:
-    """带重试的 LLM 调用，失败时抛出异常由调用方处理。"""
-    response = llm.invoke([message])
+    """带重试的 LLM 调用，失败时抛出异常由调用方处理。
+
+    使用 `_invoke_with_hard_timeout()` 而非直接 `llm.invoke()`：httpx/openai 的
+    `timeout` 参数是"读空闲超时"（inter-byte），只要连接上还有任意字节到达
+    （包括跨代理链路产生的 TCP/SSE keepalive 噪声）就会被重置，不能保证总耗时
+    上限。实测在多层代理环境下曾出现单次调用挂起数十分钟到数小时、远超配置的
+    `page_timeout`（2 分钟）才最终报错的情况。硬性 wall-clock 超时从应用层
+    兜底，不依赖网络库对"读超时"语义的实现细节。
+    """
+    response = _invoke_with_hard_timeout(llm, message, settings.page_timeout)
     return response.content
 
 

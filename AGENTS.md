@@ -12,6 +12,7 @@ src/pdf2md/
 ├── agent.py              # 核心：per-page Agent 循环、PageProcessingError、astream_conversion()
 ├── config.py             # 环境变量配置（Settings，双 Provider）
 ├── llm.py                # build_vision_llm() / build_orchestrator_llm() 双 Provider 构建函数
+├── model_registry.py     # get_model_limits()：视觉模型 context window/最大输出 token 分层探测
 ├── task_manager.py       # 任务 CRUD + SQLite + 目录管理 + resume_from_page + model
 ├── streaming.py          # asyncio pub/sub，为 SSE 提供实时事件总线
 ├── cli.py                # 命令行：convert（单文件）| serve（启动 Web）
@@ -180,7 +181,7 @@ tasks/
 
 - **视觉 Provider**（固定为 SiliconFlow）：`tools/image_analyzer.py` 的 `describe_image` 实际调用，模型固定使用 `settings.vision_chat_model`，不支持按任务切换。
 - **编排 Agent Provider**（独立配置，任意 OpenAI-compatible 服务）：`agent.py` 的 `_build_page_agent()` 使用，需支持 Tool Calling，与视觉 Provider 完全独立（并非所有支持视觉理解的模型都同时支持 Tool Calling）。
-- `llm.py` 提供 `build_vision_llm()` / `build_orchestrator_llm()` 两个构建函数。
+- `llm.py` 提供 `build_vision_llm()` / `build_orchestrator_llm()` 两个构建函数；`build_vision_llm()` 通过 `settings.effective_vision_max_tokens` 获取 `max_tokens`，该属性在 `VISION_MAX_TOKENS` 未显式配置时会调用 `model_registry.get_model_limits()` 做分层自动探测（精确表 → 可选的 litellm 注册表 → 前缀模糊匹配 → 安全默认值）。
 
 ## 环境变量
 
@@ -209,7 +210,7 @@ tasks/
 | `MAX_CONCURRENT_TASKS` | 最大并发 Web 任务数 | `3` |
 | `HOST` / `PORT` | Web 服务监听 | `0.0.0.0:8000` |
 | `PAGE_TIMEOUT` | 单次视觉 LLM 调用超时（秒，为空闲超时非总耗时）| `120` |
-| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限，防止重复输出循环无限生成）| `4000` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限，防止重复输出循环无限生成）；留空则按模型自动探测（见 `model_registry.py`）| 自动探测 |
 | `RETRY_ATTEMPTS` | tenacity 重试总次数（含首次）| `4` |
 | `RETRY_WAIT_MIN` | 首次重试等待秒数 | `2` |
 | `RETRY_WAIT_MAX` | 最大重试等待秒数 | `60` |

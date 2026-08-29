@@ -76,7 +76,7 @@ def build_vision_llm(model: str | None = None, timeout: float | None = None) -> 
         api_key=settings.siliconflow_api_key,
         base_url=settings.siliconflow_base_url,
         timeout=timeout,
-        max_tokens=settings.vision_max_tokens,
+        max_tokens=settings.effective_vision_max_tokens,
     )
 
 

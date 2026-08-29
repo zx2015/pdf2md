@@ -29,6 +29,7 @@ agent.astream_conversion(pdf, output, images_dir, task_id, start_page=1)
 - `streaming.py` — asyncio pub/sub（`subscribe/publish/close`）
 - `agent.py` — `PageProcessingError`, `_build_page_agent()`, `_process_one_page()`, `astream_conversion()`
 - `llm.py` — `build_vision_llm()` / `build_orchestrator_llm()`（双 Provider 构建函数）
+- `model_registry.py` — `get_model_limits()`：视觉模型 context window/最大输出 token 分层探测
 - `tools/image_analyzer.py` — `describe_image(image_path, prompt)`，固定使用 `settings.vision_chat_model`，
   含 tenacity 重试、重复输出检测
 - `tools/file_tools.py` — `read_file_lines` / `write_file_lines`
@@ -128,7 +129,7 @@ PYTHONPATH=src pytest -m "not e2e"   # 未安装包时使用
 | `MAX_CONCURRENT_TASKS` | 最大并发 Web 任务数 | `3` |
 | `HOST` / `PORT` | Web 服务监听 | `0.0.0.0:8000` |
 | `PAGE_TIMEOUT` | 单次 LLM 调用超时（秒，为空闲超时非总耗时）| `120` |
-| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限，防止重复输出循环无限生成）| `4000` |
+| `VISION_MAX_TOKENS` | 视觉模型单次输出最大 token 数（硬性上限，防止重复输出循环无限生成）；留空则按模型自动探测（见 `model_registry.py`）| 自动探测 |
 | `RETRY_ATTEMPTS` | tenacity 重试总次数 | `4` |
 | `RETRY_WAIT_MIN` / `RETRY_WAIT_MAX` | 退避等待范围（秒）| `2` / `60` |
 | `RATE_LIMIT_WAIT` | 429 时额外等待（秒）| `15` |

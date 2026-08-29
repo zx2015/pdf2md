@@ -57,6 +57,7 @@ src/pdf2md/
 │                      #       _process_one_page(), astream_conversion()
 ├── config.py          # Settings dataclass（pydantic-settings，双 Provider）
 ├── llm.py             # build_vision_llm() / build_orchestrator_llm() 双 Provider 构建函数
+├── model_registry.py  # get_model_limits()：视觉模型容量分层探测（精确表/litellm/前缀/默认值）
 ├── task_manager.py    # 任务 CRUD + SQLite + resume_from_page + model（视觉模型）
 ├── streaming.py       # asyncio pub/sub 事件总线
 ├── cli.py             # 命令行入口
@@ -214,7 +215,7 @@ class Settings(BaseSettings):
     pdf_dpi: int = 150
     temp_dir: str = "./tmp"          # 命令行模式临时目录
     page_timeout: int = 120          # 单次视觉 LLM 调用超时（秒）
-    vision_max_tokens: int = 4000    # 视觉模型单次输出最大 token 数（硬性上限）
+    vision_max_tokens: int | None = None  # 显式设置固定生效；None 时按模型自动探测
     max_retries: int = 2             # httpx 连接重试次数
     retry_attempts: int = 4          # tenacity 业务层重试总次数
     retry_wait_min: int = 2          # 首次重试等待秒数
@@ -231,6 +232,12 @@ class Settings(BaseSettings):
 （编排 Agent Provider，供 `agent.py` 的 `_build_page_agent()` 使用）。二者互不共享
 api_key/base_url/model，`describe_image` 固定使用 `settings.vision_chat_model`，
 不影响编排 Agent 的模型配置。
+
+`build_vision_llm()` 的 `max_tokens` 取自 `settings.effective_vision_max_tokens`：
+若 `.env` 显式设置了 `VISION_MAX_TOKENS`，直接使用该值；否则调用
+`model_registry.get_model_limits(vision_chat_model)` 按分层兜底策略自动探测
+（项目内精确匹配表 → 可选依赖 litellm 的社区注册表 → 项目内前缀模糊匹配 →
+保守安全默认值），详见 `model_registry.py` 模块文档。
 
 ## 7. 前端设计
 
